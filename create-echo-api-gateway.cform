@@ -1,0 +1,305 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Creates an API Gateway that echoes back data POSTed to it, with Custom Authoriser",
+    "Parameters" : {
+        "APIName" : {
+            "Default" : "Echoer",
+            "Description" : "The name of the API",
+            "Type" : "String"
+        },
+        "APIDescription" : {
+            "Default" : "Echoes data sent as a POST request",
+            "Description" : "Description of the API",
+            "Type" : "String"
+        },
+        "ResourceName" : {
+            "Default" : "echo",
+            "Description" : "The path of the resource (i.e. https://<domain>/<stage>/[resource]) that performs the echo",
+            "Type" : "String"
+        },
+        "StageName" : {
+            "Default" : "v1",
+            "Description" : "The name for the API stage",
+            "Type" : "String"
+        }
+	},
+	"Resources" : {
+        "RestApi": {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": { "Ref" : "APIName" },
+                "Description" : { "Ref" : "APIDescription" }
+            }
+        },    
+        "EchoResource": {
+            "Type": "AWS::ApiGateway::Resource",
+            "Properties": {
+                "RestApiId": { "Ref" : "RestApi" },
+                "ParentId": { "Fn::GetAtt" : [ "RestApi", "RootResourceId" ] },
+                "PathPart": { "Ref" : "ResourceName" }
+            }
+        },
+        "EchoPOST": {
+            "Type": "AWS::ApiGateway::Method",
+            "Properties": {
+                "AuthorizationType" : "CUSTOM",
+                "AuthorizerId" : { "Ref" : "Authoriser" },
+                "HttpMethod" : "POST",
+                "Integration": {
+                    "Type": "AWS_PROXY",
+                    "IntegrationHttpMethod": "POST",
+                    "Uri": { 
+                        "Fn::Join" : [ "", 
+                            [
+                                "arn:aws:apigateway:", 
+                                { "Ref" : "AWS::Region" }, 
+                                ":lambda:path/2015-03-31/functions/", 
+                                { "Fn::GetAtt" : [ "Lambda", "Arn" ] }, 
+                                "/invocations"
+                            ]
+                        ] 
+                    }
+                },
+                "ResourceId" : { "Ref" : "EchoResource" },
+                "RestApiId" : { "Ref" : "RestApi" }
+            }
+        },
+        "RestApiDeployment": {
+            "Type": "AWS::ApiGateway::Deployment",
+            "DependsOn": [ "EchoPOST" ],
+            "Properties": {
+                "RestApiId": { "Ref" : "RestApi" },
+                "StageName": { "Ref" : "StageName" }
+            }
+        },    
+        "Authoriser" : {
+            "Type" : "AWS::ApiGateway::Authorizer",
+            "Properties" : {
+                "AuthorizerCredentials" : { "Fn::GetAtt": [ "AuthoriserRole", "Arn" ] },
+                "AuthorizerResultTtlInSeconds" : "30",
+                "AuthorizerUri" : { 
+                    "Fn::Join" : [ "", 
+                        [
+                            "arn:aws:apigateway:", 
+                            { "Ref" : "AWS::Region" }, 
+                            ":lambda:path/2015-03-31/functions/", 
+                            { "Fn::GetAtt" : [ "LambdaAuthoriser", "Arn" ] }, 
+                            "/invocations"
+                        ]
+                    ] 
+                },
+                "IdentitySource" : "method.request.header.Authorization",
+                "Name" : { "Fn::Sub" : [ "${RestAPI}-${Resource}", { "RestAPI" : { "Ref" : "RestApi" }, "Resource" : { "Ref" : "ResourceName" } } ] },
+                "RestApiId" : { "Ref" : "RestApi" },
+                "Type" : "TOKEN"
+            }
+        },
+        "AuthoriserRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "apigateway.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "root",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action" : [ "lambda:InvokeFunction" ],
+                                    "Effect" : "Allow",
+                                    "Resource" : { "Fn::GetAtt" : [ "LambdaAuthoriser", "Arn" ] }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "LambdaAuthoriser": {
+            "Properties": {
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                                "def generate_policy(principal_id, effect, resource):",
+                                "    response = {}",
+                                "    ",
+                                "    response[\"principalId\"] = principal_id",
+                                "    if effect and resource:",
+                                "        policy = { ",
+                                "            \"Version\" : \"2012-10-17\",",
+                                "            \"Statement\" : [",
+                                "                {",
+                                "                    \"Action\" : \"execute-api:Invoke\",",
+                                "                    \"Effect\" : effect,",
+                                "                    \"Resource\" : resource",
+                                "                }",
+                                "            ]",
+                                "        }",
+                                "        response[\"policyDocument\"] = policy",
+                                "",
+                                "    # Can optionally return a context object of your choosing.",
+                                "    response[\"context\"] = {",
+                                "        \"aKey\" : \"Hello\",",
+                                "        \"bKey\" : 123",
+                                "    }",
+                                "    return response",
+                                "",
+                                "def validate_token(token):",
+                                "    # Comprehensive validation should be performed here",
+                                "    val = token.lower()",
+                                "    if val in [ \"allow\", \"deny\" ]:",
+                                "        m = { \"allow\" : \"Allow\", \"deny\": \"Deny\" }",
+                                "        return (\"user_id\", m[val])",
+                                "    if val is \"unauthorized\":",
+                                "        return (None, \"Unauthorized\")",
+                                "    return (None, \"Error: Invalid token\")",
+                                "",
+                                "def process(event):",
+                                "    token = event.get(\"authorizationToken\", \"\")",
+                                "    (user_id, status) = validate_token(token)",
+                                "    if not user_id:",
+                                "        return status",
+                                "    return generate_policy(user_id, status, event[\"methodArn\"])",
+                                "",
+                                "def lambda_handler(event, context):",
+                                "    return process(event)",
+                                ""
+                            ]
+                        ]
+                    }
+                },
+                "Description": "Custom authorising Lambda for this API",
+                "Handler": "index.lambda_handler",
+                "MemorySize": 128,
+                "Role": { "Fn::GetAtt": [ "LambdaRole", "Arn" ] },
+                "Runtime": "python2.7",
+                "Timeout": 5
+            },
+            "Type": "AWS::Lambda::Function"
+        },
+        "Lambda" : {
+            "Type": "AWS::Lambda::Function",
+            "Properties" : {
+                "Code" : {
+                    "ZipFile" : {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                                "from json import dumps",
+                                "",
+                                "def do_something(event):",
+                                "    # Processing goes here, returning status code of processing as well as result",
+                                "    print(event)",
+                                "    return (200, event)",
+                                "",
+                                "def lambda_handler(event, context):",
+                                "    # Wrapper code to catch unexpected errors",
+                                "    try:",
+                                "       response = do_something(event)",
+                                "       return { \"statusCode\" : response[0], \"headers\" : {}, \"body\": dumps(response[1]) }",
+                                "    except Exception as e:",
+                                "       return { \"statusCode\" : 500, \"headers\" : {}, \"body\": \"Internal error: {}\".format(e) }",
+                                ""
+                            ]
+                        ]
+                    }
+                },
+                "Description" : "Lambda echoing the event it received",
+                "Handler" : "index.lambda_handler",
+                "MemorySize" : 128,
+                "Role" : { "Fn::GetAtt": [ "LambdaRole", "Arn" ] },
+                "Runtime" : "python2.7",
+                "Timeout" : 5
+            }
+        },
+        "LambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "lambda.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "root",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "logs:CreateLogGroup",
+                                        "logs:CreateLogStream",
+                                        "logs:PutLogEvents"
+                                    ],
+                                    "Resource": "arn:aws:logs:*:*:*",
+                                    "Effect": "Allow"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "APILambdaPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": { "Ref" : "Lambda" },
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Join": [ "",
+                        [
+                            "arn:aws:execute-api:",
+                            { "Ref" : "AWS::Region" },
+                            ":",
+                            { "Ref" : "AWS::AccountId" },
+                            ":",
+                            { "Ref" : "RestApi" },
+                            "/*/*"
+                        ]
+                    ]
+                }
+            }
+        }    
+    },
+    "Outputs" : {
+        "URL" : {
+            "Description" : "The URL to the deployed stage",
+            "Value" : {
+                "Fn::Join" : [ "",
+                    [
+                        "https://",
+                        { "Ref" : "RestApi" },
+                        ".execute-api.",
+                        { "Ref" : "AWS::Region" },
+                        ".amazonaws.com/", 
+                        { "Ref" : "StageName" }
+                    ]
+                ]
+            }
+        }
+    }
+}
