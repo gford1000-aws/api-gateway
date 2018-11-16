@@ -12,6 +12,11 @@
             "Description" : "Description of the API",
             "Type" : "String"
         },
+        "GETResourceName" : {
+            "Default" : "gettime",
+            "Description" : "The path of the resource (i.e. https://<domain>/<stage>/[resource]) when getting a time",
+            "Type" : "String"
+        },
         "POSTResourceName" : {
             "Default" : "sendtime",
             "Description" : "The path of the resource (i.e. https://<domain>/<stage>/[resource]) when submitting a time",
@@ -55,6 +60,41 @@
                 "PathPart": { "Ref" : "POSTResourceName" }
             }
         },
+        "ApiGETResourceName": {
+            "Type": "AWS::ApiGateway::Resource",
+            "Properties": {
+                "RestApiId": { "Ref" : "RestApi" },
+                "ParentId": { "Fn::GetAtt" : [ "RestApi", "RootResourceId" ] },
+                "PathPart": { "Ref" : "GETResourceName" }
+            }
+        },
+        "APIGETResourceMethod": {
+            "Condition" : "UseAuthorisation",
+            "Type": "AWS::ApiGateway::Method",
+            "DependsOn": [ "GETLambda" ],
+            "Properties": {
+                "AuthorizationType" : "CUSTOM",
+                "AuthorizerId" : { "Ref" : "Authoriser" },
+                "HttpMethod" : "GET",
+                "Integration": {
+                    "Type": "AWS_PROXY",
+                    "IntegrationHttpMethod": "POST",
+                    "Uri": { 
+                        "Fn::Join" : [ "", 
+                            [
+                                "arn:aws:apigateway:", 
+                                { "Ref" : "AWS::Region" }, 
+                                ":lambda:path/2015-03-31/functions/", 
+                                { "Fn::GetAtt" : [ "GETLambda", "Arn" ] }, 
+                                "/invocations"
+                            ]
+                        ] 
+                    }
+                },
+                "ResourceId" : { "Ref" : "ApiGETResourceName" },
+                "RestApiId" : { "Ref" : "RestApi" }
+            }
+        },
         "APIPOSTResourceMethod": {
             "Condition" : "UseAuthorisation",
             "Type": "AWS::ApiGateway::Method",
@@ -85,7 +125,7 @@
         "RestApiStage": {
             "Condition" : "UseAuthorisation",
             "Type": "AWS::ApiGateway::Stage",
-            "DependsOn": [ "APIPOSTResourceMethod" ],
+            "DependsOn": [ "APIPOSTResourceMethod", "APIGETResourceMethod" ],
             "Properties": {
                 "DeploymentId": { "Ref" : "RestApiDeployment" },
                 "RestApiId": { "Ref" : "RestApi" },
@@ -127,10 +167,36 @@
                 "RestApiId" : { "Ref" : "RestApi" }
             }
         },
+        "APIGETResourceMethodNoAuth": {
+            "Condition" : "NoAuthorisation",
+            "Type": "AWS::ApiGateway::Method",
+            "DependsOn": [ "GETLambda" ],
+            "Properties": {
+                "AuthorizationType" : "NONE",
+                "HttpMethod" : "GET",
+                "Integration": {
+                    "Type": "AWS_PROXY",
+                    "IntegrationHttpMethod": "POST",
+                    "Uri": { 
+                        "Fn::Join" : [ "", 
+                            [
+                                "arn:aws:apigateway:", 
+                                { "Ref" : "AWS::Region" }, 
+                                ":lambda:path/2015-03-31/functions/", 
+                                { "Fn::GetAtt" : [ "GETLambda", "Arn" ] }, 
+                                "/invocations"
+                            ]
+                        ] 
+                    }
+                },
+                "ResourceId" : { "Ref" : "ApiGETResourceName" },
+                "RestApiId" : { "Ref" : "RestApi" }
+            }
+        },
         "RestApiStageNoAuth": {
             "Condition" : "NoAuthorisation",
             "Type": "AWS::ApiGateway::Stage",
-            "DependsOn": [ "APIPOSTResourceMethodNoAuth" ],
+            "DependsOn": [ "APIPOSTResourceMethodNoAuth", "APIGETResourceMethodNoAuth" ],
             "Properties": {
                 "DeploymentId": { "Ref" : "RestApiDeploymentNoAuth" },
                 "RestApiId": { "Ref" : "RestApi" },
@@ -164,7 +230,7 @@
                     ] 
                 },
                 "IdentitySource" : { "Fn::Sub": [ "method.request.header.${HeaderName}", { "HeaderName": { "Ref" : "AuthorisationTokenHeaderName" } } ] },
-                "Name" : { "Fn::Sub" : [ "${RestAPI}-${Resource}", { "RestAPI" : { "Ref" : "RestApi" }, "Resource" : { "Ref" : "POSTResourceName" } } ] },
+                "Name" : { "Ref" : "RestApi" },
                 "RestApiId" : { "Ref" : "RestApi" },
                 "Type" : "TOKEN"
             }
@@ -413,7 +479,28 @@
                 ]
             }
         },
-        "APILambdaPermission": {
+        "APIGETResourceLambdaPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": { "Ref" : "GETLambda" },
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Join": [ "",
+                        [
+                            "arn:aws:execute-api:",
+                            { "Ref" : "AWS::Region" },
+                            ":",
+                            { "Ref" : "AWS::AccountId" },
+                            ":",
+                            { "Ref" : "RestApi" },
+                            "/*/*"
+                        ]
+                    ]
+                }
+            }
+        },
+        "APIPOSTResourceLambdaPermission": {
             "Type": "AWS::Lambda::Permission",
             "Properties": {
                 "Action": "lambda:InvokeFunction",
