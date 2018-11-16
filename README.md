@@ -5,7 +5,8 @@ AWS CloudFormation script that creates an internet facing API using AWS API Gate
 The script demonstrates how to create an API Gateway with optional Lambda based authorization, based
 on a header that contains an authorization token.
 
-The API accepts a POST request, disregarding the posted body and returning the current datetime.
+The API accepts a POST to the POSTResourceName, expecting a body containing the attribute `dt`.  If found, 
+it's value is returned.
 
 ## Arguments
 
@@ -13,7 +14,7 @@ The API accepts a POST request, disregarding the posted body and returning the c
 | ---------------------------- |:---------------------------------------------------------------------------:|
 | APIName                      | Name of the REST API                                                        |
 | APIDescription               | Description of the REST API                                                 |
-| ResourceName                 | Name of the resource to be created (one resource from the root resource)    |
+| POSTResourceName             | Name of the POST resource to be created                                     |
 | StageName                    | Name of the stage to be created                                             |
 | AuthorisationTokenHeaderName | Name of the header containing the auth token (leave blank for no auth)      |
 | AuthorisationTimeout         | TTL of cache for authorisations (set to 0 for no caching)                   |
