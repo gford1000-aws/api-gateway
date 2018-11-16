@@ -1,28 +1,44 @@
 {
     "AWSTemplateFormatVersion": "2010-09-09",
-    "Description": "Creates an API Gateway that echoes back data POSTed to it, with Custom Authoriser",
+    "Description": "Creates an API Gateway that returns the current time, with X-Ray enabled and optional Custom Authoriser ",
     "Parameters" : {
         "APIName" : {
-            "Default" : "Echoer",
+            "Default" : "GetTime",
             "Description" : "The name of the API",
             "Type" : "String"
         },
         "APIDescription" : {
-            "Default" : "Echoes data sent as a POST request",
+            "Default" : "Returns current time from a GET request",
             "Description" : "Description of the API",
             "Type" : "String"
         },
         "ResourceName" : {
-            "Default" : "echo",
-            "Description" : "The path of the resource (i.e. https://<domain>/<stage>/[resource]) that performs the echo",
+            "Default" : "timer",
+            "Description" : "The path of the resource (i.e. https://<domain>/<stage>/[resource])",
             "Type" : "String"
         },
         "StageName" : {
             "Default" : "v1",
             "Description" : "The name for the API stage",
             "Type" : "String"
+        },
+        "AuthorisationTokenHeaderName" : {
+            "Default" : "AuthDetails",
+            "Description" : "The name of the header containing the authorisation token",
+            "Type" : "String"
+        },
+        "AuthorisationTimeout" : {
+            "Default" : "10",
+            "Description" : "The TTL in seconds for authorisation of a token.  Set to 0 for no authorisation caching",
+            "Type" : "Number",
+            "MinValue" : 0,
+            "MaxValue" : 3600
         }
 	},
+    "Conditions" : {
+        "NoAuthorisation" : { "Fn::Equals" : [ { "Ref" : "AuthorisationTokenHeaderName" }, "" ] },
+        "UseAuthorisation" : { "Fn::Not" : [ { "Condition" : "NoAuthorisation" } ] }
+    },
 	"Resources" : {
         "RestApi": {
             "Type": "AWS::ApiGateway::RestApi",
@@ -31,7 +47,7 @@
                 "Description" : { "Ref" : "APIDescription" }
             }
         },    
-        "EchoResource": {
+        "ApiResourceName": {
             "Type": "AWS::ApiGateway::Resource",
             "Properties": {
                 "RestApiId": { "Ref" : "RestApi" },
@@ -39,8 +55,10 @@
                 "PathPart": { "Ref" : "ResourceName" }
             }
         },
-        "EchoPOST": {
+        "APIResourceMethod": {
+            "Condition" : "UseAuthorisation",
             "Type": "AWS::ApiGateway::Method",
+            "DependsOn": [ "Lambda" ],
             "Properties": {
                 "AuthorizationType" : "CUSTOM",
                 "AuthorizerId" : { "Ref" : "Authoriser" },
@@ -60,23 +78,80 @@
                         ] 
                     }
                 },
-                "ResourceId" : { "Ref" : "EchoResource" },
+                "ResourceId" : { "Ref" : "ApiResourceName" },
                 "RestApiId" : { "Ref" : "RestApi" }
             }
         },
-        "RestApiDeployment": {
-            "Type": "AWS::ApiGateway::Deployment",
-            "DependsOn": [ "EchoPOST" ],
+        "RestApiStage": {
+            "Condition" : "UseAuthorisation",
+            "Type": "AWS::ApiGateway::Stage",
+            "DependsOn": [ "APIResourceMethod" ],
             "Properties": {
+                "DeploymentId": { "Ref" : "RestApiDeployment" },
                 "RestApiId": { "Ref" : "RestApi" },
-                "StageName": { "Ref" : "StageName" }
+                "StageName": { "Ref" : "StageName" },
+                "TracingEnabled": true
+            }
+        },    
+        "RestApiDeployment": {
+            "Condition" : "UseAuthorisation",
+            "Type": "AWS::ApiGateway::Deployment",
+            "DependsOn": [ "APIResourceMethod" ],
+            "Properties": {
+                "RestApiId": { "Ref" : "RestApi" }
+            }
+        },    
+        "APIResourceMethodNoAuth": {
+            "Condition" : "NoAuthorisation",
+            "Type": "AWS::ApiGateway::Method",
+            "DependsOn": [ "Lambda" ],
+            "Properties": {
+                "AuthorizationType" : "NONE",
+                "HttpMethod" : "POST",
+                "Integration": {
+                    "Type": "AWS_PROXY",
+                    "IntegrationHttpMethod": "POST",
+                    "Uri": { 
+                        "Fn::Join" : [ "", 
+                            [
+                                "arn:aws:apigateway:", 
+                                { "Ref" : "AWS::Region" }, 
+                                ":lambda:path/2015-03-31/functions/", 
+                                { "Fn::GetAtt" : [ "Lambda", "Arn" ] }, 
+                                "/invocations"
+                            ]
+                        ] 
+                    }
+                },
+                "ResourceId" : { "Ref" : "ApiResourceName" },
+                "RestApiId" : { "Ref" : "RestApi" }
+            }
+        },
+        "RestApiStageNoAuth": {
+            "Condition" : "NoAuthorisation",
+            "Type": "AWS::ApiGateway::Stage",
+            "DependsOn": [ "APIResourceMethodNoAuth" ],
+            "Properties": {
+                "DeploymentId": { "Ref" : "RestApiDeploymentNoAuth" },
+                "RestApiId": { "Ref" : "RestApi" },
+                "StageName": { "Ref" : "StageName" },
+                "TracingEnabled": true
+            }
+        },
+        "RestApiDeploymentNoAuth": {
+            "Condition" : "NoAuthorisation",
+            "Type": "AWS::ApiGateway::Deployment",
+            "DependsOn": [ "APIResourceMethodNoAuth" ],
+            "Properties": {
+                "RestApiId": { "Ref" : "RestApi" }
             }
         },    
         "Authoriser" : {
+            "Condition" : "UseAuthorisation",
             "Type" : "AWS::ApiGateway::Authorizer",
             "Properties" : {
-                "AuthorizerCredentials" : { "Fn::GetAtt": [ "AuthoriserRole", "Arn" ] },
-                "AuthorizerResultTtlInSeconds" : "30",
+                "AuthorizerCredentials" : { "Fn::GetAtt" : [ "AuthoriserRole", "Arn" ] },
+                "AuthorizerResultTtlInSeconds" : { "Ref" : "AuthorisationTimeout" },
                 "AuthorizerUri" : { 
                     "Fn::Join" : [ "", 
                         [
@@ -88,13 +163,14 @@
                         ]
                     ] 
                 },
-                "IdentitySource" : "method.request.header.Authorization",
+                "IdentitySource" : { "Fn::Sub": [ "method.request.header.${HeaderName}", { "HeaderName": { "Ref" : "AuthorisationTokenHeaderName" } } ] },
                 "Name" : { "Fn::Sub" : [ "${RestAPI}-${Resource}", { "RestAPI" : { "Ref" : "RestApi" }, "Resource" : { "Ref" : "ResourceName" } } ] },
                 "RestApiId" : { "Ref" : "RestApi" },
                 "Type" : "TOKEN"
             }
         },
         "AuthoriserRole": {
+            "Condition" : "UseAuthorisation",
             "Type": "AWS::IAM::Role",
             "Properties": {
                 "AssumeRolePolicyDocument": {
@@ -128,12 +204,15 @@
             }
         },
         "LambdaAuthoriser": {
+            "Condition" : "UseAuthorisation",
             "Properties": {
                 "Code": {
                     "ZipFile": {
                         "Fn::Join": [
                             "\n",
                             [
+                                "from uuid import uuid4",
+                                "",
                                 "def generate_policy(principal_id, effect, resource):",
                                 "    response = {}",
                                 "    ",
@@ -160,19 +239,20 @@
                                 "",
                                 "def validate_token(token):",
                                 "    # Comprehensive validation should be performed here",
+                                "    # based on a user_id embedded/derived from the token",
+                                "",
+                                "    # Here we simply create unique ids for each call",
+                                "    user_id = str(uuid4())",
+                                "",
                                 "    val = token.lower()",
                                 "    if val in [ \"allow\", \"deny\" ]:",
                                 "        m = { \"allow\" : \"Allow\", \"deny\": \"Deny\" }",
-                                "        return (\"user_id\", m[val])",
-                                "    if val is \"unauthorized\":",
-                                "        return (None, \"Unauthorized\")",
-                                "    return (None, \"Error: Invalid token\")",
+                                "        return (user_id, m[val])",
+                                "    return (user_id, \"Deny\")",
                                 "",
                                 "def process(event):",
                                 "    token = event.get(\"authorizationToken\", \"\")",
                                 "    (user_id, status) = validate_token(token)",
-                                "    if not user_id:",
-                                "        return status",
                                 "    return generate_policy(user_id, status, event[\"methodArn\"])",
                                 "",
                                 "def lambda_handler(event, context):",
@@ -187,7 +267,10 @@
                 "MemorySize": 128,
                 "Role": { "Fn::GetAtt": [ "LambdaRole", "Arn" ] },
                 "Runtime": "python2.7",
-                "Timeout": 5
+                "Timeout": 5,
+                "TracingConfig" : {
+                    "Mode" : "Active"
+                }
             },
             "Type": "AWS::Lambda::Function"
         },
@@ -200,11 +283,13 @@
                             "\n",
                             [
                                 "from json import dumps",
+                                "from datetime import datetime",
                                 "",
                                 "def do_something(event):",
                                 "    # Processing goes here, returning status code of processing as well as result",
+                                "    # Here just return the current time, to show the Lambda is being called",
                                 "    print(event)",
-                                "    return (200, event)",
+                                "    return (200, datetime.now().isoformat('T'))",
                                 "",
                                 "def lambda_handler(event, context):",
                                 "    # Wrapper code to catch unexpected errors",
@@ -218,12 +303,15 @@
                         ]
                     }
                 },
-                "Description" : "Lambda echoing the event it received",
+                "Description" : "Lambda returning the current date/time",
                 "Handler" : "index.lambda_handler",
                 "MemorySize" : 128,
                 "Role" : { "Fn::GetAtt": [ "LambdaRole", "Arn" ] },
                 "Runtime" : "python2.7",
-                "Timeout" : 5
+                "Timeout" : 5,
+                "TracingConfig" : {
+                    "Mode" : "Active"
+                }
             }
         },
         "LambdaRole": {
@@ -244,7 +332,7 @@
                 "Path": "/",
                 "Policies": [
                     {
-                        "PolicyName": "root",
+                        "PolicyName": "LoggingLambdaActivity",
                         "PolicyDocument": {
                             "Version": "2012-10-17",
                             "Statement": [
@@ -255,6 +343,22 @@
                                         "logs:PutLogEvents"
                                     ],
                                     "Resource": "arn:aws:logs:*:*:*",
+                                    "Effect": "Allow"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "PolicyName": "X-RayTracing",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "xray:PutTraceSegments",
+                                        "xray:PutTelemetryRecords"
+                                    ],
+                                    "Resource": "*",
                                     "Effect": "Allow"
                                 }
                             ]
